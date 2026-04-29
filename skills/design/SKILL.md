@@ -99,7 +99,7 @@ basic-design.md を実装可能な粒度まで落とす。
 
 ### basic-design.md
 
-```markdown
+````markdown
 # 基本設計: <機能名>
 
 最終更新: <YYYY-MM-DD>
@@ -131,7 +131,7 @@ erDiagram
 ## 6. エラー処理方針
 ## 7. 設計判断ログ
 | # | 判断 | 採用案 | 却下案 | 理由 |
-```
+````
 
 ### detailed-design.md
 

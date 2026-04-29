@@ -79,11 +79,11 @@ UI を伴う AC は、可能なら開発サーバーを起動して動作を確�
 
 `docs/design/<feature>/verification-report.md` を以下のテンプレートで生成・更新する。
 
-```markdown
+````markdown
 # 検証レポート: <機能名>
 
 検証日時: <YYYY-MM-DD HH:MM>
-検証者: Claude (verify skill)
+検証者: verify skill
 対象コミット: <git rev-parse HEAD の結果>
 総合判定: ✅ PASS / ⚠️ PARTIAL / ❌ FAIL
 
@@ -123,7 +123,7 @@ FAIL src/auth/login.test.ts
 
 ## 次に実行すべきこと
 - `implement` Skill で上記 FAIL 項目を修正後、再度 `verify` を実行
-```
+````
 
 ## 進め方の原則
 
