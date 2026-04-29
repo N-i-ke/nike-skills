@@ -6,5 +6,13 @@
     "name": "N-i-ke"
   },
   "homepage": "https://github.com/N-i-ke/nike-skills",
-  "repository": "https://github.com/N-i-ke/nike-skills"
+  "repository": "https://github.com/N-i-ke/nike-skills",
+  "keywords": [
+    "design",
+    "implementation",
+    "verification",
+    "requirements",
+    "workflow",
+    "japanese"
+  ]
 }

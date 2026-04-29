@@ -27,7 +27,7 @@
 ```bash
 # Claude Code 内で
 /plugin marketplace add N-i-ke/nike-skills
-/plugin install nike-skills
+/plugin install nike-skills@nike-skills
 ```
 
 ### 個別 Skill をコピーして使う場合
