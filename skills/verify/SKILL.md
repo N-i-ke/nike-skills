@@ -25,11 +25,22 @@ description: implement Skill で実装された機能が要件を満たしてい
 ### ステップ 1: 入力の読み込み
 
 1. ユーザーから機能名（スラグ）を受け取る。
-2. 以下を読む（無ければ存在するものだけで進めるが、最低限 requirements.md と implementation-log.md は必須）。
+2. 以下を読む。
    - `docs/design/<feature>/requirements.md` — 受け入れ基準の根拠
    - `docs/design/<feature>/detailed-design.md` — 検証観点
    - `docs/design/<feature>/implementation-log.md` — 何が実装されたか、検証用メモ
 3. プロジェクトのテスト・リント・ビルドコマンドを把握する（`package.json`, `Makefile`, `CLAUDE.md` などを参照）。
+
+**入力が不足している場合の対応:**
+
+| 状態 | 推奨アクション |
+|------|--------------|
+| `docs/design/<feature>/` が無い | 検証範囲が不明なため停止。ユーザーに「何を検証したいか」を確認するか、`git diff` / 直近コミットから対象を推定してよいか合意を取る |
+| requirements.md が無い | 受け入れ基準が無いため PASS/FAIL 判定不能。implementation-log.md から「何を実装したか」だけでも検証する旨を明示 |
+| implementation-log.md が無い | 検証コマンドが不明。README / package.json / Makefile から推測し、それを使う旨をレポートに明記 |
+| すべて揃っている | そのまま進む |
+
+入力不足の場合、検証レポートの先頭に **「前提資料の不足」** セクションを設け、何が無かったか・どう代替したかを必ず記録する。
 
 ### ステップ 2: 検証計画の作成
 

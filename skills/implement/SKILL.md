@@ -16,11 +16,22 @@ description: design Skill が作成した要件定義・基本設計・詳細設
 ### ステップ 1: 設計ドキュメントの読み込み
 
 1. ユーザーから機能名を受け取る。スラグが不明なら `docs/design/` 配下を `ls` して候補を提示する。
-2. 以下を順に読む（存在しない場合はその時点で停止し、`design` Skill の実行をユーザーに促す）。
+2. 以下を順に読む。
    - `docs/design/<feature>/requirements.md`
    - `docs/design/<feature>/basic-design.md`
    - `docs/design/<feature>/detailed-design.md`
 3. 既存の `implementation-log.md` があれば読み、再開地点を把握する。
+
+**設計ドキュメントが存在しない / 不完全な場合の対応:**
+
+| 状態 | 推奨アクション |
+|------|--------------|
+| `docs/design/<feature>/` 自体が無い | `design` Skill を先に実行することを提案。小規模変更ならユーザー合意のうえ簡易メモのみで進めてよいか確認 |
+| requirements.md のみ存在 | 受け入れ基準を実装計画に直接落とし込んでよいか確認 |
+| detailed-design.md のみ欠落 | basic-design.md から実装ステップを推測してよいか確認 |
+| すべて存在 | そのまま進む |
+
+ユーザーが「設計をスキップして進めてよい」と明言した場合は、最低限 `implementation-log.md` の冒頭に **「設計ドキュメントなしで実装した範囲」** セクションを設け、そこに実装した機能・受け入れ条件・既知の制約を記録する（後続の verify が拠り所にする）。
 
 ### ステップ 2: 実装計画の策定
 
