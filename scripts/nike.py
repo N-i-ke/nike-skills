@@ -2,7 +2,7 @@
 """
 nike — CLI helper for the nike-skills workflow.
 
-Mechanizes deterministic parts of the design → implement → verify
+Mechanizes deterministic parts of the design → implement → verify (→ investigate)
 workflow so AI Skills only spend tokens on tasks that genuinely
 require judgment. All commands emit JSON on stdout for AI consumption.
 
@@ -12,8 +12,10 @@ Subcommands:
   parse-requirements <slug>
   impl-init <slug> [--force]
   verify-init <slug> [--force]
+  investigate-init <slug> [--type bug|security|both] [--title "<title>"] [--force]
   detect
   checks [--lint] [--typecheck] [--test] [--build]
+  scan [--timeout N] [--output-limit N]
 
 Exit codes:
   0   ok
@@ -26,6 +28,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import shutil
 import subprocess
 import sys
 from datetime import date, datetime
@@ -34,6 +37,7 @@ from typing import Any
 
 ROOT = Path.cwd()
 DESIGN_ROOT = ROOT / "docs" / "design"
+INVESTIGATIONS_ROOT = ROOT / "docs" / "investigations"
 SCRIPT_DIR = Path(__file__).parent.resolve()
 TEMPLATE_DIR = SCRIPT_DIR / "templates"
 
@@ -371,6 +375,122 @@ def cmd_verify_init(args: argparse.Namespace) -> None:
     )
 
 
+def cmd_investigate_init(args: argparse.Namespace) -> None:
+    inv_dir = INVESTIGATIONS_ROOT / args.slug
+    inv_dir.mkdir(parents=True, exist_ok=True)
+
+    target = inv_dir / "report.md"
+    if target.exists() and not args.force:
+        emit({"status": "exists", "path": rel(target)})
+
+    title = args.title or args.slug
+    commit = "unknown"
+    try:
+        commit = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=ROOT, stderr=subprocess.DEVNULL
+        ).decode().strip()
+    except Exception:
+        pass
+
+    target.write_text(
+        render_template(
+            "investigation-report.md",
+            TITLE=title,
+            DATETIME=datetime.now().isoformat(timespec="minutes"),
+            TYPE=args.type,
+            COMMIT=commit,
+        ),
+        encoding="utf-8",
+    )
+    emit(
+        {
+            "status": "created",
+            "path": rel(target),
+            "type": args.type,
+            "commit": commit,
+        }
+    )
+
+
+SCANNER_REGISTRY = [
+    # (name, availability_check, command)
+    # availability_check is (binary_name, project_marker_path | None)
+    ("npm-audit", ("npm", "package.json"), "npm audit --json"),
+    ("pip-audit", ("pip-audit", None), "pip-audit --format=json"),
+    ("safety", ("safety", None), "safety check --json"),
+    ("cargo-audit", ("cargo-audit", "Cargo.toml"), "cargo audit --json"),
+    ("gosec", ("gosec", "go.mod"), "gosec -fmt json -quiet ./..."),
+    ("govulncheck", ("govulncheck", "go.mod"), "govulncheck -json ./..."),
+    ("semgrep", ("semgrep", None), "semgrep scan --json --config=auto --quiet"),
+    ("bandit", ("bandit", None), "bandit -r . -f json -q"),
+]
+
+
+def _scanner_available(binary: str, marker: str | None) -> bool:
+    if shutil.which(binary) is None:
+        return False
+    if marker and not (ROOT / marker).exists():
+        return False
+    return True
+
+
+def cmd_scan(args: argparse.Namespace) -> None:
+    available = []
+    for name, (binary, marker), cmd in SCANNER_REGISTRY:
+        if _scanner_available(binary, marker):
+            available.append((name, cmd))
+
+    if not available:
+        emit(
+            {
+                "status": "no_scanners",
+                "message": (
+                    "No security scanners detected on PATH. "
+                    "Consider installing one of: semgrep, npm (audit), pip-audit, "
+                    "safety, cargo-audit, gosec, govulncheck, bandit."
+                ),
+                "results": [],
+            }
+        )
+
+    results: list[dict] = []
+    for name, cmd in available:
+        result: dict = {"name": name, "command": cmd}
+        try:
+            proc = subprocess.run(
+                cmd,
+                shell=True,
+                capture_output=True,
+                text=True,
+                cwd=ROOT,
+                timeout=args.timeout,
+            )
+            stdout = proc.stdout or ""
+            stderr = proc.stderr or ""
+            limit = args.output_limit
+            result["exit_code"] = proc.returncode
+            # Many scanners use exit code 1 to mean "findings present" — that's not a tool failure.
+            # We surface the raw exit code; AI interprets meaning per scanner.
+            stripped = stdout.strip()
+            parsed = None
+            if stripped.startswith("{") or stripped.startswith("["):
+                try:
+                    parsed = json.loads(stdout)
+                except Exception:
+                    parsed = None
+            result["json"] = parsed
+            result["stdout_tail"] = stdout[-limit:] if len(stdout) > limit else stdout
+            result["stderr_tail"] = stderr[-limit:] if len(stderr) > limit else stderr
+            result["truncated"] = len(stdout) > limit or len(stderr) > limit
+        except subprocess.TimeoutExpired:
+            result.update({"exit_code": -1, "error": "timeout"})
+        except Exception as e:
+            result.update({"exit_code": -1, "error": str(e)})
+        results.append(result)
+
+    emit({"status": "ok", "scanners_run": len(results), "results": results})
+
+
 def cmd_detect(args: argparse.Namespace) -> None:
     emit(detect_project())
 
@@ -462,6 +582,16 @@ def main() -> None:
     p.add_argument("--force", action="store_true")
     p.set_defaults(func=cmd_verify_init)
 
+    p = sub.add_parser(
+        "investigate-init",
+        help="Create docs/investigations/<slug>/report.md from template",
+    )
+    p.add_argument("slug")
+    p.add_argument("--type", choices=["bug", "security", "both"], default="bug")
+    p.add_argument("--title", help="human-readable title (defaults to slug)")
+    p.add_argument("--force", action="store_true")
+    p.set_defaults(func=cmd_investigate_init)
+
     p = sub.add_parser("detect", help="Detect project type and infer commands")
     p.set_defaults(func=cmd_detect)
 
@@ -473,6 +603,11 @@ def main() -> None:
     p.add_argument("--timeout", type=int, default=600, help="per-command timeout in seconds")
     p.add_argument("--output-limit", type=int, default=4000, help="bytes of stdout/stderr to keep")
     p.set_defaults(func=cmd_checks)
+
+    p = sub.add_parser("scan", help="Run available security/vulnerability scanners")
+    p.add_argument("--timeout", type=int, default=600, help="per-scanner timeout in seconds")
+    p.add_argument("--output-limit", type=int, default=8000, help="bytes of stdout/stderr to keep")
+    p.set_defaults(func=cmd_scan)
 
     args = parser.parse_args()
     args.func(args)
