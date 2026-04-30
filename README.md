@@ -101,15 +101,24 @@ nike-skills/
 │   └── investigate/SKILL.md
 ├── scripts/
 │   ├── nike.py
-│   └── templates/
-│       ├── requirements.md
-│       ├── basic-design.md
-│       ├── detailed-design.md
-│       ├── implementation-log.md
-│       ├── verification-report.md
-│       └── investigation-report.md
+│   ├── templates/
+│   │   ├── requirements.md
+│   │   ├── basic-design.md
+│   │   ├── detailed-design.md
+│   │   ├── implementation-log.md
+│   │   ├── verification-report.md
+│   │   └── investigation-report.md
+│   └── tests/test_nike.py
+├── examples/
+│   ├── README.md
+│   └── url-shortener/    完成形のサンプル feature
+├── CLAUDE.md
 └── README.md
 ```
+
+## 完成形のサンプル
+
+[`examples/url-shortener/`](examples/url-shortener/) に、URL 短縮サービスを題材にした 5 つの artifact (requirements / basic-design / detailed-design / implementation-log / verification-report) を完成形で置いてある。設計書の書き方に迷ったら参考にしてほしい。`nike validate url-shortener` でクリーンに通る形になっている。
 
 ## 受け入れ基準の記述ルール
 
