@@ -10,6 +10,7 @@ Subcommands:
   init <slug> [--name "<human name>"] [--force]
   status [<slug>]
   parse-requirements <slug>
+  validate <slug> [--strict]
   impl-init <slug> [--force]
   verify-init <slug> [--force]
   investigate-init <slug> [--type bug|security|both] [--title "<title>"] [--force]
@@ -19,7 +20,7 @@ Subcommands:
 
 Exit codes:
   0   ok
-  1   recoverable error (file not found, already exists, etc.)
+  1   recoverable error (file not found, validation findings, etc.)
   2   command failure (one or more checks failed in `checks`)
 """
 
@@ -96,7 +97,7 @@ def parse_requirements_md(text: str) -> list[dict]:
         re.DOTALL,
     )
     desc_pattern = re.compile(
-        r"\*\*説明\*\*[:：]?\s*(.+?)(?=\n\s*\*\*受け入れ基準|\Z)",
+        r"\*\*説明\*\*[:：]?[ \t]*(.*?)(?=\n\s*\*\*受け入れ基準|\Z)",
         re.DOTALL,
     )
 
@@ -375,6 +376,167 @@ def cmd_verify_init(args: argparse.Namespace) -> None:
     )
 
 
+def validate_requirements_text(text: str) -> tuple[list[dict], list[dict]]:
+    """Return (errors, warnings) for a requirements.md document body."""
+    errors: list[dict] = []
+    warnings: list[dict] = []
+
+    if not re.match(r"^#\s*要件定義[:：]?", text):
+        errors.append(
+            {"rule": "E002", "message": "Missing top-level '# 要件定義: <name>' heading"}
+        )
+
+    if not re.search(r"##\s*\d*\.?\s*機能要件", text):
+        errors.append(
+            {"rule": "E004", "message": "Missing '## ... 機能要件' section"}
+        )
+        # Without the section, no point checking FR-level rules
+        return errors, warnings
+
+    requirements = parse_requirements_md(text)
+    if not requirements:
+        errors.append(
+            {
+                "rule": "E005",
+                "message": "機能要件 section has no parseable FR-XX entries",
+            }
+        )
+
+    seen_ids: set[str] = set()
+    for fr in requirements:
+        fr_id = fr["id"]
+        if fr_id in seen_ids:
+            errors.append({"rule": "E006", "message": f"Duplicate FR ID: {fr_id}"})
+        seen_ids.add(fr_id)
+
+        if not fr["acceptance_criteria"]:
+            errors.append(
+                {"rule": "E007", "message": f"{fr_id} has no acceptance criteria"}
+            )
+
+        if not fr["description"].strip():
+            warnings.append(
+                {"rule": "W008", "message": f"{fr_id} has empty 説明"}
+            )
+
+    # E009: AC list items present but none match Given/When/Then
+    ac_section = re.compile(
+        r"\*\*受け入れ基準\*\*[:：]?\s*\n((?:\s*-\s*.+\n?)+)"
+    )
+    gwt = re.compile(r"-\s*Given\s+.+[,，、]\s*When\s+.+[,，、]\s*Then\s+.+")
+    for m in ac_section.finditer(text):
+        items = [
+            line
+            for line in m.group(1).splitlines()
+            if line.strip().startswith("-")
+        ]
+        for item in items:
+            if not gwt.match(item.strip()):
+                snippet = item.strip()[:80]
+                errors.append(
+                    {
+                        "rule": "E010",
+                        "message": (
+                            f"AC item doesn't match 'Given ..., When ..., Then ...': "
+                            f"{snippet}"
+                        ),
+                    }
+                )
+
+    return errors, warnings
+
+
+def cmd_validate(args: argparse.Namespace) -> None:
+    fd = feature_dir(args.slug)
+    if not fd.exists():
+        emit({"error": f"Feature directory not found: {rel(fd)}"}, 1)
+
+    findings_errors: list[dict] = []
+    findings_warnings: list[dict] = []
+
+    def add_error(file: str, rule: str, message: str) -> None:
+        findings_errors.append({"file": file, "rule": rule, "message": message})
+
+    def add_warning(file: str, rule: str, message: str) -> None:
+        findings_warnings.append({"file": file, "rule": rule, "message": message})
+
+    # requirements.md
+    req_path = fd / "requirements.md"
+    requirements_data: list[dict] = []
+    if not req_path.exists():
+        add_error("requirements.md", "E001", "requirements.md not found")
+    else:
+        text = req_path.read_text(encoding="utf-8")
+        errors, warnings = validate_requirements_text(text)
+        for e in errors:
+            add_error("requirements.md", e["rule"], e["message"])
+        for w in warnings:
+            add_warning("requirements.md", w["rule"], w["message"])
+        requirements_data = parse_requirements_md(text)
+
+    fr_ids = {fr["id"] for fr in requirements_data}
+    ac_ids = {ac["id"] for fr in requirements_data for ac in fr["acceptance_criteria"]}
+
+    # basic-design.md
+    bd_path = fd / "basic-design.md"
+    if not bd_path.exists():
+        add_error("basic-design.md", "E101", "basic-design.md not found")
+
+    # detailed-design.md
+    dd_path = fd / "detailed-design.md"
+    if not dd_path.exists():
+        add_error("detailed-design.md", "E201", "detailed-design.md not found")
+
+    # implementation-log.md (cross-reference only; absence is not an error since
+    # implementation may not have started yet)
+    log_path = fd / "implementation-log.md"
+    if log_path.exists() and fr_ids:
+        log_text = log_path.read_text(encoding="utf-8")
+        for m in re.finditer(r"-\s*\[[ xX]\]\s*(FR-\d+)", log_text):
+            ref = m.group(1)
+            if ref not in fr_ids:
+                add_warning(
+                    "implementation-log.md",
+                    "W301",
+                    f"References {ref} which does not exist in requirements.md",
+                )
+
+    # verification-report.md (cross-reference)
+    vr_path = fd / "verification-report.md"
+    if vr_path.exists() and ac_ids:
+        vr_text = vr_path.read_text(encoding="utf-8")
+        for m in re.finditer(r"\|\s*(FR-\d+-AC\d+)\s*\|", vr_text):
+            ref = m.group(1)
+            if ref not in ac_ids:
+                add_warning(
+                    "verification-report.md",
+                    "W401",
+                    f"References {ref} which does not exist in requirements.md",
+                )
+
+    error_count = len(findings_errors)
+    warning_count = len(findings_warnings)
+
+    if error_count:
+        status = "errors"
+    elif warning_count:
+        status = "warnings"
+    else:
+        status = "ok"
+
+    fail = error_count > 0 or (args.strict and warning_count > 0)
+    emit(
+        {
+            "slug": args.slug,
+            "status": status,
+            "summary": {"errors": error_count, "warnings": warning_count},
+            "errors": findings_errors,
+            "warnings": findings_warnings,
+        },
+        code=1 if fail else 0,
+    )
+
+
 def cmd_investigate_init(args: argparse.Namespace) -> None:
     inv_dir = INVESTIGATIONS_ROOT / args.slug
     inv_dir.mkdir(parents=True, exist_ok=True)
@@ -571,6 +733,18 @@ def main() -> None:
     p = sub.add_parser("parse-requirements", help="Parse requirements.md to JSON")
     p.add_argument("slug")
     p.set_defaults(func=cmd_parse_requirements)
+
+    p = sub.add_parser(
+        "validate",
+        help="Lint design docs (FR/AC format, cross-doc references)",
+    )
+    p.add_argument("slug")
+    p.add_argument(
+        "--strict",
+        action="store_true",
+        help="treat warnings as errors (exit code 1 even with no errors)",
+    )
+    p.set_defaults(func=cmd_validate)
 
     p = sub.add_parser("impl-init", help="Create implementation-log.md from requirements")
     p.add_argument("slug")

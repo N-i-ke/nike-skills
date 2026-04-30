@@ -23,6 +23,7 @@ description: ソフトウェア機能の要件定義・基本設計・詳細設�
 |------------|---------|------|
 | 新機能のテンプレ3点生成 | `python3 <nike.py> init <slug> --name "<人間向け名>"` | requirements/basic-design/detailed-design を一発作成 |
 | 既存 feature の状況確認 | `python3 <nike.py> status [<slug>]` | 全 feature のフェーズ完了状況を JSON で取得 |
+| 設計ドキュメントの lint | `python3 <nike.py> validate <slug>` | FR/AC フォーマット崩れ・ID 重複・必須セクション欠落を事前検出 |
 
 CLI は決定的な処理だけを行う。実際の内容は AI が Edit ツールで埋める。
 
@@ -100,6 +101,18 @@ basic-design.md を実装可能な粒度まで落とす。
 
 この形式を崩すと verify Skill の自動 AC 表生成が動かない。
 
+## 仕上げ前の検証
+
+各フェーズ書き終えたら、ユーザー合意を取る前に以下を実行して構造的な問題が無いことを確認する:
+
+```bash
+python3 <nike.py> validate <slug>
+```
+
+- `status: ok` → 構造 OK。ユーザー合意のステップへ
+- `status: warnings` → 警告内容を確認、必要なら修正
+- `status: errors` → 必ず修正してから次のフェーズへ進む
+
 ## 進め方の原則
 
 - **一度に全部書こうとしない**。フェーズごとにユーザーと合意を取りながら進める。
@@ -108,3 +121,4 @@ basic-design.md を実装可能な粒度まで落とす。
 - **Mermaid を活用する**。図はテキストで残し、レビューしやすくする。
 - 過度に詳細な記述は避け、実装者が判断すべき部分は意図的に余白を残す。
 - テンプレート書き出しは `nike init` に任せ、AI トークンは内容の充填と判断に使う。
+- 各フェーズの仕上げで `nike validate` を回し、構造崩れを早期検出する。
