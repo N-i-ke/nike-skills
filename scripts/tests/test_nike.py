@@ -359,5 +359,152 @@ class TestNikeScan(unittest.TestCase):
             self.assertIn(data["status"], ("no_scanners", "ok"))
 
 
+class TestValidateRequirementsText(unittest.TestCase):
+    """Unit tests for the pure validation function."""
+
+    VALID = (
+        "# 要件定義: テスト機能\n"
+        "\n"
+        "## 4. 機能要件\n"
+        "### FR-01: A\n"
+        "**説明**: A の説明\n"
+        "\n"
+        "**受け入れ基準**:\n"
+        "- Given X, When Y, Then Z\n"
+        "\n"
+    )
+
+    def test_valid_passes(self) -> None:
+        errors, warnings = nike.validate_requirements_text(self.VALID)
+        self.assertEqual(errors, [])
+        self.assertEqual(warnings, [])
+
+    def test_missing_top_heading(self) -> None:
+        text = self.VALID.replace("# 要件定義: テスト機能", "# Some other title")
+        errors, _ = nike.validate_requirements_text(text)
+        rules = {e["rule"] for e in errors}
+        self.assertIn("E002", rules)
+
+    def test_missing_fr_section(self) -> None:
+        text = "# 要件定義: x\n\n## 1. 背景\n"
+        errors, _ = nike.validate_requirements_text(text)
+        rules = {e["rule"] for e in errors}
+        self.assertIn("E004", rules)
+
+    def test_no_fr_entries(self) -> None:
+        text = "# 要件定義: x\n\n## 4. 機能要件\n\n(まだ未記入)\n"
+        errors, _ = nike.validate_requirements_text(text)
+        rules = {e["rule"] for e in errors}
+        self.assertIn("E005", rules)
+
+    def test_duplicate_fr_ids(self) -> None:
+        text = (
+            "# 要件定義: x\n\n## 4. 機能要件\n"
+            "### FR-01: A\n**説明**: A\n\n**受け入れ基準**:\n"
+            "- Given a, When b, Then c\n\n"
+            "### FR-01: B\n**説明**: B\n\n**受け入れ基準**:\n"
+            "- Given d, When e, Then f\n\n"
+        )
+        errors, _ = nike.validate_requirements_text(text)
+        rules = {e["rule"] for e in errors}
+        self.assertIn("E006", rules)
+
+    def test_fr_with_no_ac(self) -> None:
+        text = (
+            "# 要件定義: x\n\n## 4. 機能要件\n"
+            "### FR-01: A\n**説明**: A\n\n**受け入れ基準**:\n"
+            "- this is not a Given/When/Then line\n\n"
+        )
+        errors, _ = nike.validate_requirements_text(text)
+        rules = {e["rule"] for e in errors}
+        # Could fire E007 (no AC parsed) or E010 (malformed AC). Either is correct.
+        self.assertTrue("E007" in rules or "E010" in rules)
+
+    def test_empty_description_warns(self) -> None:
+        text = (
+            "# 要件定義: x\n\n## 4. 機能要件\n"
+            "### FR-01: A\n**説明**: \n\n**受け入れ基準**:\n"
+            "- Given a, When b, Then c\n\n"
+        )
+        _, warnings = nike.validate_requirements_text(text)
+        rules = {w["rule"] for w in warnings}
+        self.assertIn("W008", rules)
+
+
+class TestNikeValidate(unittest.TestCase):
+    def _seed_requirements(self, td: str, slug: str, body: str) -> None:
+        run_nike("init", slug, cwd=td)
+        Path(td, f"docs/design/{slug}/requirements.md").write_text(body, encoding="utf-8")
+
+    def test_clean_returns_ok(self) -> None:
+        with TemporaryDirectory() as td:
+            self._seed_requirements(
+                td,
+                "clean",
+                "# 要件定義: clean\n\n## 4. 機能要件\n"
+                "### FR-01: A\n**説明**: A\n\n**受け入れ基準**:\n"
+                "- Given X, When Y, Then Z\n\n",
+            )
+            r = run_nike("validate", "clean", cwd=td)
+            self.assertEqual(r.returncode, 0)
+            data = json.loads(r.stdout)
+            self.assertEqual(data["status"], "ok")
+            self.assertEqual(data["summary"]["errors"], 0)
+
+    def test_errors_exit_code_1(self) -> None:
+        with TemporaryDirectory() as td:
+            self._seed_requirements(
+                td,
+                "broken",
+                "# Wrong heading\n\n## Random\n",
+            )
+            r = run_nike("validate", "broken", cwd=td)
+            self.assertEqual(r.returncode, 1)
+            data = json.loads(r.stdout)
+            self.assertEqual(data["status"], "errors")
+            self.assertGreater(data["summary"]["errors"], 0)
+
+    def test_strict_treats_warnings_as_failure(self) -> None:
+        with TemporaryDirectory() as td:
+            # Create a requirements doc with warning-only condition (empty 説明)
+            self._seed_requirements(
+                td,
+                "warn",
+                "# 要件定義: warn\n\n## 4. 機能要件\n"
+                "### FR-01: A\n**説明**: \n\n**受け入れ基準**:\n"
+                "- Given X, When Y, Then Z\n\n",
+            )
+            r_loose = run_nike("validate", "warn", cwd=td)
+            self.assertEqual(r_loose.returncode, 0)
+            r_strict = run_nike("validate", "warn", "--strict", cwd=td)
+            self.assertEqual(r_strict.returncode, 1)
+
+    def test_cross_ref_unknown_fr_in_log(self) -> None:
+        with TemporaryDirectory() as td:
+            self._seed_requirements(
+                td,
+                "xref",
+                "# 要件定義: xref\n\n## 4. 機能要件\n"
+                "### FR-01: A\n**説明**: A\n\n**受け入れ基準**:\n"
+                "- Given X, When Y, Then Z\n\n",
+            )
+            # Add a log that references FR-99 (doesn't exist)
+            Path(td, "docs/design/xref/implementation-log.md").write_text(
+                "# 実装ログ\n\n- [ ] FR-99: ghost\n",
+                encoding="utf-8",
+            )
+            r = run_nike("validate", "xref", cwd=td)
+            data = json.loads(r.stdout)
+            warning_rules = {w["rule"] for w in data["warnings"]}
+            self.assertIn("W301", warning_rules)
+
+    def test_missing_feature_dir(self) -> None:
+        with TemporaryDirectory() as td:
+            r = run_nike("validate", "ghost", cwd=td)
+            self.assertEqual(r.returncode, 1)
+            data = json.loads(r.stdout)
+            self.assertIn("error", data)
+
+
 if __name__ == "__main__":
     unittest.main()

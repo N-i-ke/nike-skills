@@ -1,6 +1,6 @@
 {
   "name": "nike-skills",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "設計→実装→検証および調査のソフトウェア開発ワークフローを支援する Skill 集",
   "author": {
     "name": "N-i-ke"

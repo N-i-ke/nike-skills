@@ -21,6 +21,7 @@
 nike init <slug> [--name "<人間向け名>"] [--force]
 nike status [<slug>]
 nike parse-requirements <slug>
+nike validate <slug> [--strict]
 nike impl-init <slug> [--force]
 nike verify-init <slug> [--force]
 nike investigate-init <slug> [--type bug|security|both] [--title "<title>"] [--force]
@@ -34,6 +35,7 @@ nike scan [--timeout N] [--output-limit N]
 | `init` | requirements/basic-design/detailed-design テンプレ3点を一括生成 |
 | `status` | feature ごとにどのフェーズが完了/欠落しているかを返す |
 | `parse-requirements` | requirements.md から FR/AC を構造化 JSON で抽出 |
+| `validate` | 設計ドキュメントを lint (FR/AC フォーマット崩れ・ID 重複・必須セクション欠落・cross-doc 参照) |
 | `impl-init` | 要件から FR をタスク化した implementation-log.md を seed |
 | `verify-init` | 要件から AC 表入りの verification-report.md を生成 |
 | `investigate-init` | 調査レポート雛形 (`docs/investigations/<slug>/report.md`) を生成 |
