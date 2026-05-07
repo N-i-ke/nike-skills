@@ -14,6 +14,8 @@ Subcommands:
   impl-init <slug> [--force]
   verify-init <slug> [--force]
   investigate-init <slug> [--type bug|security|both] [--title "<title>"] [--force]
+  review-context [<pr>] [--base <ref>]
+  review-init <slug> [--force]
   detect
   checks [--lint] [--typecheck] [--test] [--build]
   scan [--timeout N] [--output-limit N]
@@ -39,6 +41,7 @@ from typing import Any
 ROOT = Path.cwd()
 DESIGN_ROOT = ROOT / "docs" / "design"
 INVESTIGATIONS_ROOT = ROOT / "docs" / "investigations"
+REVIEWS_ROOT = ROOT / "docs" / "reviews"
 SCRIPT_DIR = Path(__file__).parent.resolve()
 TEMPLATE_DIR = SCRIPT_DIR / "templates"
 
@@ -653,6 +656,286 @@ def cmd_scan(args: argparse.Namespace) -> None:
     emit({"status": "ok", "scanners_run": len(results), "results": results})
 
 
+PR_URL_RE = re.compile(r"https?://github\.com/[^/]+/[^/]+/pull/(\d+)")
+
+
+def normalize_pr(value: str) -> str:
+    """Normalize a PR reference (`#42`, `42`, or full URL) to a number string."""
+    v = value.strip()
+    m = PR_URL_RE.match(v)
+    if m:
+        return m.group(1)
+    if v.startswith("#"):
+        v = v[1:]
+    if not v.isdigit():
+        raise ValueError(f"invalid PR reference: {value!r}")
+    return v
+
+
+def run_git(*args: str, cwd: Path | None = None) -> tuple[int, str, str]:
+    proc = subprocess.run(
+        ["git", *args],
+        cwd=cwd or ROOT,
+        capture_output=True,
+        text=True,
+    )
+    return proc.returncode, proc.stdout, proc.stderr
+
+
+def run_gh(*args: str, cwd: Path | None = None) -> tuple[int, str, str]:
+    proc = subprocess.run(
+        ["gh", *args],
+        cwd=cwd or ROOT,
+        capture_output=True,
+        text=True,
+    )
+    return proc.returncode, proc.stdout, proc.stderr
+
+
+def detect_default_branch() -> str:
+    code, out, _ = run_git("symbolic-ref", "--short", "refs/remotes/origin/HEAD")
+    if code == 0 and out.strip():
+        return out.strip().split("/", 1)[1] if "/" in out.strip() else out.strip()
+    code, out, _ = run_git("rev-parse", "--abbrev-ref", "origin/HEAD")
+    if code == 0 and out.strip() and not out.strip().startswith("HEAD"):
+        ref = out.strip()
+        return ref.split("/", 1)[1] if ref.startswith("origin/") else ref
+    return "main"
+
+
+def parse_numstat(text: str) -> list[dict]:
+    """Parse `git diff --numstat` output. Binary files report '-' for counts."""
+    files: list[dict] = []
+    for line in text.splitlines():
+        line = line.rstrip()
+        if not line:
+            continue
+        parts = line.split("\t")
+        if len(parts) < 3:
+            continue
+        added_s, deleted_s, path = parts[0], parts[1], parts[2]
+        try:
+            added = int(added_s)
+        except ValueError:
+            added = 0
+        try:
+            deleted = int(deleted_s)
+        except ValueError:
+            deleted = 0
+        files.append({"path": path, "status": "M", "added": added, "deleted": deleted})
+    return files
+
+
+def parse_name_status(text: str) -> dict[str, str]:
+    """Parse `git diff --name-status` output. Returns path → status code (A/M/D/R...)."""
+    out: dict[str, str] = {}
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        parts = line.split("\t")
+        status = parts[0][:1]  # for renames: 'R100' → 'R'
+        if status == "R" and len(parts) >= 3:
+            out[parts[2]] = "R"
+        elif len(parts) >= 2:
+            out[parts[1]] = status
+    return out
+
+
+def parse_log(text: str) -> list[dict]:
+    """Parse `git log --pretty=format:%H|%s|%an <%ae>` output."""
+    commits: list[dict] = []
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        parts = line.split("|", 2)
+        if len(parts) < 3:
+            continue
+        commits.append({"sha": parts[0], "subject": parts[1], "author": parts[2]})
+    return commits
+
+
+def match_features_from_paths(paths: list[str]) -> list[str]:
+    """Heuristically match diff paths to existing docs/design/<slug>/ features."""
+    if not DESIGN_ROOT.exists():
+        return []
+    slugs = sorted(p.name for p in DESIGN_ROOT.iterdir() if p.is_dir())
+    if not slugs:
+        return []
+
+    matched: set[str] = set()
+    design_prefix = "docs/design/"
+    for slug in slugs:
+        slug_tokens = {t for t in re.split(r"[-_]", slug) if t}
+        for path in paths:
+            norm = path.replace("\\", "/")
+            if norm.startswith(f"{design_prefix}{slug}/"):
+                matched.add(slug)
+                break
+            path_tokens = {
+                t.lower()
+                for t in re.split(r"[\\/_\-.]", norm)
+                if t
+            }
+            if not slug_tokens or not path_tokens:
+                continue
+            overlap = slug_tokens & path_tokens
+            # Require at least half of slug tokens to appear in the path.
+            if overlap and len(overlap) >= max(1, (len(slug_tokens) + 1) // 2):
+                matched.add(slug)
+                break
+    return sorted(matched)
+
+
+def cmd_review_context(args: argparse.Namespace) -> None:
+    if shutil.which("git") is None:
+        emit({"error": "git not found"}, 1)
+
+    if args.pr is None:
+        # local mode
+        code, _, stderr = run_git("rev-parse", "--git-dir")
+        if code != 0:
+            emit({"error": "not a git repository", "detail": stderr.strip()}, 1)
+
+        base_ref = args.base or detect_default_branch()
+        code, head_ref_out, _ = run_git("rev-parse", "--abbrev-ref", "HEAD")
+        head_ref = head_ref_out.strip() if code == 0 else "HEAD"
+
+        code, base_sha_out, stderr = run_git("merge-base", base_ref, "HEAD")
+        if code != 0:
+            # Fall back to the base ref directly so the diff is still meaningful.
+            code2, base_sha_out, _ = run_git("rev-parse", base_ref)
+            if code2 != 0:
+                emit(
+                    {
+                        "error": f"failed to resolve base ref: {base_ref}",
+                        "detail": stderr.strip(),
+                    },
+                    1,
+                )
+        base_sha = base_sha_out.strip()
+
+        _, head_sha_out, _ = run_git("rev-parse", "HEAD")
+        head_sha = head_sha_out.strip()
+        pr_meta = None
+    else:
+        # PR mode
+        if shutil.which("gh") is None:
+            emit({"error": "gh required for PR mode"}, 1)
+
+        try:
+            pr_num = normalize_pr(args.pr)
+        except ValueError as e:
+            emit({"error": str(e)}, 1)
+
+        code, view_out, stderr = run_gh(
+            "pr",
+            "view",
+            pr_num,
+            "--json",
+            "number,title,url,author,labels,baseRefName,headRefName,baseRefOid,headRefOid",
+        )
+        if code != 0:
+            emit({"error": "pr not found or gh failure", "detail": stderr.strip()}, 1)
+
+        try:
+            meta = json.loads(view_out)
+        except json.JSONDecodeError as e:
+            emit({"error": "failed to parse gh output", "detail": str(e)}, 1)
+
+        author = ""
+        if isinstance(meta.get("author"), dict):
+            author = meta["author"].get("login", "")
+        labels = [
+            lbl.get("name", "") for lbl in (meta.get("labels") or []) if isinstance(lbl, dict)
+        ]
+        pr_meta = {
+            "number": meta.get("number"),
+            "title": meta.get("title", ""),
+            "url": meta.get("url", ""),
+            "author": author,
+            "labels": labels,
+            "base_ref": meta.get("baseRefName", ""),
+            "head_ref": meta.get("headRefName", ""),
+        }
+        base_ref = args.base or pr_meta["base_ref"]
+        head_ref = pr_meta["head_ref"]
+        base_sha = meta.get("baseRefOid", "")
+        head_sha = meta.get("headRefOid", "")
+
+    diff_range = f"{base_sha}...{head_sha}" if base_sha and head_sha else f"{base_ref}...HEAD"
+
+    _, numstat_out, _ = run_git("diff", "--numstat", diff_range)
+    files = parse_numstat(numstat_out)
+    _, name_status_out, _ = run_git("diff", "--name-status", diff_range)
+    status_map = parse_name_status(name_status_out)
+    for f in files:
+        if f["path"] in status_map:
+            f["status"] = status_map[f["path"]]
+
+    _, log_out, _ = run_git(
+        "log", f"{base_sha}..{head_sha}" if base_sha and head_sha else f"{base_ref}..HEAD",
+        "--pretty=format:%H|%s|%an <%ae>",
+    )
+    commits = parse_log(log_out)
+
+    stats = {
+        "files_changed": len(files),
+        "added": sum(f["added"] for f in files),
+        "deleted": sum(f["deleted"] for f in files),
+    }
+
+    design_features = match_features_from_paths([f["path"] for f in files])
+    claude_md = "CLAUDE.md" if (ROOT / "CLAUDE.md").exists() else None
+
+    emit(
+        {
+            "mode": "pr" if pr_meta else "local",
+            "base": {"ref": base_ref, "sha": base_sha},
+            "head": {"ref": head_ref, "sha": head_sha},
+            "pr": pr_meta,
+            "files": files,
+            "stats": stats,
+            "commits": commits,
+            "design_features": design_features,
+            "claude_md": claude_md,
+        }
+    )
+
+
+def cmd_review_init(args: argparse.Namespace) -> None:
+    rd = REVIEWS_ROOT / args.slug
+    rd.mkdir(parents=True, exist_ok=True)
+
+    target = rd / "report.md"
+    if target.exists() and not args.force:
+        emit({"error": "report exists", "path": rel(target)}, 1)
+
+    target.write_text(
+        render_template(
+            "review-report.md",
+            NAME=args.slug,
+            DATE=date.today().isoformat(),
+            MODE="local",
+            PR_LINE="",
+            BASE_REF="-",
+            BASE_SHA_SHORT="-",
+            HEAD_REF="-",
+            HEAD_SHA_SHORT="-",
+            FILES_CHANGED="-",
+            ADDED="-",
+            DELETED="-",
+        ),
+        encoding="utf-8",
+    )
+    emit(
+        {
+            "status": "ok",
+            "slug": args.slug,
+            "report_path": rel(target),
+        }
+    )
+
+
 def cmd_detect(args: argparse.Namespace) -> None:
     emit(detect_project())
 
@@ -765,6 +1048,22 @@ def main() -> None:
     p.add_argument("--title", help="human-readable title (defaults to slug)")
     p.add_argument("--force", action="store_true")
     p.set_defaults(func=cmd_investigate_init)
+
+    p = sub.add_parser(
+        "review-context",
+        help="Collect diff/PR metadata for review (local diff or GitHub PR)",
+    )
+    p.add_argument("pr", nargs="?", help="optional PR number/URL; omit for local mode")
+    p.add_argument("--base", help="override base ref (e.g. origin/main)")
+    p.set_defaults(func=cmd_review_context)
+
+    p = sub.add_parser(
+        "review-init",
+        help="Create docs/reviews/<slug>/report.md from template",
+    )
+    p.add_argument("slug")
+    p.add_argument("--force", action="store_true")
+    p.set_defaults(func=cmd_review_init)
 
     p = sub.add_parser("detect", help="Detect project type and infer commands")
     p.set_defaults(func=cmd_detect)

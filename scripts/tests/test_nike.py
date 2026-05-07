@@ -506,5 +506,211 @@ class TestNikeValidate(unittest.TestCase):
             self.assertIn("error", data)
 
 
+class TestNormalizePR(unittest.TestCase):
+    def test_plain_number(self) -> None:
+        self.assertEqual(nike.normalize_pr("42"), "42")
+
+    def test_hash_prefixed(self) -> None:
+        self.assertEqual(nike.normalize_pr("#42"), "42")
+
+    def test_url(self) -> None:
+        self.assertEqual(
+            nike.normalize_pr("https://github.com/owner/repo/pull/42"),
+            "42",
+        )
+
+    def test_invalid_raises(self) -> None:
+        with self.assertRaises(ValueError):
+            nike.normalize_pr("not-a-pr")
+
+
+class TestParseNumstat(unittest.TestCase):
+    def test_basic(self) -> None:
+        text = "30\t5\tscripts/nike.py\n10\t0\tREADME.md\n"
+        files = nike.parse_numstat(text)
+        self.assertEqual(len(files), 2)
+        self.assertEqual(files[0]["path"], "scripts/nike.py")
+        self.assertEqual(files[0]["added"], 30)
+        self.assertEqual(files[0]["deleted"], 5)
+
+    def test_binary_file_uses_zero(self) -> None:
+        text = "-\t-\timg/logo.png\n"
+        files = nike.parse_numstat(text)
+        self.assertEqual(files[0]["added"], 0)
+        self.assertEqual(files[0]["deleted"], 0)
+
+
+class TestParseNameStatus(unittest.TestCase):
+    def test_added_modified_deleted(self) -> None:
+        text = "A\tnew.py\nM\texisting.py\nD\told.py\n"
+        result = nike.parse_name_status(text)
+        self.assertEqual(result["new.py"], "A")
+        self.assertEqual(result["existing.py"], "M")
+        self.assertEqual(result["old.py"], "D")
+
+    def test_rename(self) -> None:
+        text = "R100\told.py\tnew.py\n"
+        result = nike.parse_name_status(text)
+        self.assertEqual(result["new.py"], "R")
+
+
+class TestMatchFeaturesFromPaths(unittest.TestCase):
+    def test_direct_design_dir_edit(self) -> None:
+        td = TemporaryDirectory()
+        self.addCleanup(td.cleanup)
+        td_path = Path(td.name)
+        (td_path / "docs" / "design" / "user-auth").mkdir(parents=True)
+
+        original = nike.DESIGN_ROOT
+        nike.DESIGN_ROOT = td_path / "docs" / "design"
+        try:
+            result = nike.match_features_from_paths(
+                ["docs/design/user-auth/requirements.md"]
+            )
+        finally:
+            nike.DESIGN_ROOT = original
+        self.assertIn("user-auth", result)
+
+    def test_no_design_dir_returns_empty(self) -> None:
+        td = TemporaryDirectory()
+        self.addCleanup(td.cleanup)
+        original = nike.DESIGN_ROOT
+        nike.DESIGN_ROOT = Path(td.name) / "nonexistent"
+        try:
+            self.assertEqual(nike.match_features_from_paths(["a.py"]), [])
+        finally:
+            nike.DESIGN_ROOT = original
+
+    def test_no_match_returns_empty(self) -> None:
+        td = TemporaryDirectory()
+        self.addCleanup(td.cleanup)
+        td_path = Path(td.name)
+        (td_path / "docs" / "design" / "user-auth").mkdir(parents=True)
+        original = nike.DESIGN_ROOT
+        nike.DESIGN_ROOT = td_path / "docs" / "design"
+        try:
+            result = nike.match_features_from_paths(
+                ["scripts/unrelated.py", "README.md"]
+            )
+        finally:
+            nike.DESIGN_ROOT = original
+        self.assertEqual(result, [])
+
+
+class TestNikeReviewInit(unittest.TestCase):
+    def test_creates_report(self) -> None:
+        with TemporaryDirectory() as td:
+            r = run_nike("review-init", "pr-42", cwd=td)
+            self.assertEqual(r.returncode, 0, msg=r.stderr)
+            data = json.loads(r.stdout)
+            self.assertEqual(data["status"], "ok")
+            self.assertEqual(data["slug"], "pr-42")
+            report = Path(td, "docs/reviews/pr-42/report.md")
+            self.assertTrue(report.exists())
+            text = report.read_text(encoding="utf-8")
+            self.assertIn("PR Review レポート: pr-42", text)
+            # Placeholders should all be substituted
+            self.assertNotIn("{{NAME}}", text)
+            self.assertNotIn("{{DATE}}", text)
+            self.assertNotIn("{{MODE}}", text)
+
+    def test_existing_without_force_errors(self) -> None:
+        with TemporaryDirectory() as td:
+            run_nike("review-init", "x", cwd=td)
+            r = run_nike("review-init", "x", cwd=td)
+            self.assertEqual(r.returncode, 1)
+            data = json.loads(r.stdout)
+            self.assertIn("error", data)
+
+    def test_force_overwrites(self) -> None:
+        with TemporaryDirectory() as td:
+            run_nike("review-init", "x", cwd=td)
+            target = Path(td, "docs/reviews/x/report.md")
+            target.write_text("MODIFIED", encoding="utf-8")
+            r = run_nike("review-init", "x", "--force", cwd=td)
+            self.assertEqual(r.returncode, 0)
+            self.assertNotEqual(target.read_text(encoding="utf-8"), "MODIFIED")
+
+
+def _git(td: str, *args: str) -> None:
+    subprocess.run(["git", *args], cwd=td, check=True, capture_output=True)
+
+
+def _git_init_with_commit(td: str) -> None:
+    """Initialize a git repo with a base commit on `main`."""
+    _git(td, "init", "-q", "-b", "main")
+    _git(td, "config", "user.email", "test@example.com")
+    _git(td, "config", "user.name", "Test")
+    _git(td, "config", "commit.gpgsign", "false")
+    Path(td, "README.md").write_text("# initial\n", encoding="utf-8")
+    _git(td, "add", "README.md")
+    _git(td, "commit", "-q", "-m", "initial")
+
+
+@unittest.skipIf(
+    subprocess.run(["git", "--version"], capture_output=True).returncode != 0,
+    "git not available",
+)
+class TestNikeReviewContextLocal(unittest.TestCase):
+    def test_returns_local_mode_with_diff(self) -> None:
+        with TemporaryDirectory() as td:
+            _git_init_with_commit(td)
+            _git(td, "checkout", "-q", "-b", "feat/x")
+            Path(td, "src.py").write_text("print('hi')\n", encoding="utf-8")
+            _git(td, "add", "src.py")
+            _git(td, "commit", "-q", "-m", "add src")
+
+            r = run_nike("review-context", "--base", "main", cwd=td)
+            self.assertEqual(r.returncode, 0, msg=r.stderr)
+            data = json.loads(r.stdout)
+            self.assertEqual(data["mode"], "local")
+            self.assertEqual(data["base"]["ref"], "main")
+            self.assertEqual(data["head"]["ref"], "feat/x")
+            self.assertIsNone(data["pr"])
+            self.assertEqual(data["stats"]["files_changed"], 1)
+            self.assertEqual(data["files"][0]["path"], "src.py")
+            self.assertEqual(data["files"][0]["status"], "A")
+            self.assertEqual(len(data["commits"]), 1)
+            self.assertIn("add src", data["commits"][0]["subject"])
+
+    def test_no_diff_returns_empty_files(self) -> None:
+        with TemporaryDirectory() as td:
+            _git_init_with_commit(td)
+            r = run_nike("review-context", "--base", "main", cwd=td)
+            self.assertEqual(r.returncode, 0, msg=r.stderr)
+            data = json.loads(r.stdout)
+            self.assertEqual(data["files"], [])
+            self.assertEqual(data["stats"]["files_changed"], 0)
+
+    def test_design_features_detected(self) -> None:
+        with TemporaryDirectory() as td:
+            _git_init_with_commit(td)
+            (Path(td) / "docs/design/user-auth").mkdir(parents=True)
+            _git(td, "checkout", "-q", "-b", "feat/y")
+            Path(td, "docs/design/user-auth/requirements.md").write_text(
+                "# 要件定義: user-auth\n", encoding="utf-8"
+            )
+            _git(td, "add", "docs/design/user-auth/requirements.md")
+            _git(td, "commit", "-q", "-m", "add design")
+            r = run_nike("review-context", "--base", "main", cwd=td)
+            data = json.loads(r.stdout)
+            self.assertIn("user-auth", data["design_features"])
+
+    def test_claude_md_detected(self) -> None:
+        with TemporaryDirectory() as td:
+            _git_init_with_commit(td)
+            Path(td, "CLAUDE.md").write_text("# CLAUDE\n", encoding="utf-8")
+            r = run_nike("review-context", "--base", "main", cwd=td)
+            data = json.loads(r.stdout)
+            self.assertEqual(data["claude_md"], "CLAUDE.md")
+
+    def test_not_a_git_repo_errors(self) -> None:
+        with TemporaryDirectory() as td:
+            r = run_nike("review-context", cwd=td)
+            self.assertEqual(r.returncode, 1)
+            data = json.loads(r.stdout)
+            self.assertIn("error", data)
+
+
 if __name__ == "__main__":
     unittest.main()
