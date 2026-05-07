@@ -11,6 +11,7 @@
 | [`design`](skills/design/SKILL.md) | 要件定義・基本設計・詳細設計を作成 | `docs/design/<feature>/{requirements,basic-design,detailed-design}.md` |
 | [`implement`](skills/implement/SKILL.md) | 設計ドキュメントに基づき実装 | ソースコード、`docs/design/<feature>/implementation-log.md` |
 | [`verify`](skills/verify/SKILL.md) | 完成した機能を自動検証 | `docs/design/<feature>/verification-report.md` |
+| [`pr-review`](skills/pr-review/SKILL.md) | ローカル差分 / GitHub PR をマージ前にレビュー | チャット出力、必要に応じ `docs/reviews/<slug>/report.md` |
 | [`investigate`](skills/investigate/SKILL.md) | 不具合・脆弱性の調査 (根本原因解析、セキュリティレビュー) | `docs/investigations/<slug>/report.md` |
 
 ## nike CLI
@@ -25,6 +26,8 @@ nike validate <slug> [--strict]
 nike impl-init <slug> [--force]
 nike verify-init <slug> [--force]
 nike investigate-init <slug> [--type bug|security|both] [--title "<title>"] [--force]
+nike review-context [<pr>] [--base <ref>]
+nike review-init <slug> [--force]
 nike detect
 nike checks [--lint] [--typecheck] [--test] [--build]
 nike scan [--timeout N] [--output-limit N]
@@ -39,6 +42,8 @@ nike scan [--timeout N] [--output-limit N]
 | `impl-init` | 要件から FR をタスク化した implementation-log.md を seed |
 | `verify-init` | 要件から AC 表入りの verification-report.md を生成 |
 | `investigate-init` | 調査レポート雛形 (`docs/investigations/<slug>/report.md`) を生成 |
+| `review-context` | ローカル差分または GitHub PR の files/stats/commits/design_features/claude_md を JSON で集約 |
+| `review-init` | 観点別セクション付きの `docs/reviews/<slug>/report.md` を生成 |
 | `detect` | package.json / pyproject.toml / Cargo.toml / go.mod から lint/test/build コマンドを推定 |
 | `checks` | 検出コマンドを実行し、stdout/stderr 末尾と exit code を JSON で返す |
 | `scan` | 利用可能なセキュリティスキャナ (npm audit / pip-audit / cargo audit / gosec / govulncheck / semgrep / bandit / safety) を一括実行し JSON 集約 |
@@ -71,14 +76,6 @@ nike scan                    # 利用可能なスキャナを一括実行
 
 各 Skill は `docs/design/<feature>/` または `docs/investigations/<slug>/` を介して成果物を引き継ぐので、別セッションで再開しても文脈が失われない。
 
-## ロードマップ
-
-| 計画中 Skill | 状態 | 設計ドキュメント |
-|-------------|------|-----------------|
-| `pr-review` | 設計完了 / 実装未着手 | [`docs/design/pr-review/`](docs/design/pr-review/) |
-
-`pr-review` は、設計→実装→検証の流れの最後にマージ前の PR レビューを担う Skill。ローカル差分・GitHub PR の両方に対応し、ドキュメント整合・セキュリティ・可読性・運用・拡張性・テスト網羅・CLAUDE.md 暗黙契約の 7 観点でレビューを生成する想定。詳細は設計ドキュメント参照。
-
 ## インストール
 
 ### プラグインとして利用する場合
@@ -106,6 +103,7 @@ nike-skills/
 │   ├── design/SKILL.md
 │   ├── implement/SKILL.md
 │   ├── verify/SKILL.md
+│   ├── pr-review/SKILL.md
 │   └── investigate/SKILL.md
 ├── scripts/
 │   ├── nike.py
@@ -115,6 +113,7 @@ nike-skills/
 │   │   ├── detailed-design.md
 │   │   ├── implementation-log.md
 │   │   ├── verification-report.md
+│   │   ├── review-report.md
 │   │   └── investigation-report.md
 │   └── tests/test_nike.py
 ├── examples/

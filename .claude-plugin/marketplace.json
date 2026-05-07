@@ -5,20 +5,21 @@
     "url": "https://github.com/N-i-ke"
   },
   "metadata": {
-    "description": "設計→実装→検証および調査のソフトウェア開発ワークフロー Skill 集",
-    "version": "0.3.0"
+    "description": "設計→実装→検証・PR レビュー・調査のソフトウェア開発ワークフロー Skill 集",
+    "version": "0.4.0"
   },
   "plugins": [
     {
       "name": "nike-skills",
       "source": "./",
-      "description": "design / implement / verify / investigate の4つの Skill で要件定義から検証・脆弱性調査までを支援",
-      "version": "0.3.0",
+      "description": "design / implement / verify / pr-review / investigate の5つの Skill で要件定義から検証・PR レビュー・脆弱性調査までを支援",
+      "version": "0.4.0",
       "category": "workflow",
       "keywords": [
         "design",
         "implementation",
         "verification",
+        "pr-review",
         "investigation",
         "security",
         "requirements",
