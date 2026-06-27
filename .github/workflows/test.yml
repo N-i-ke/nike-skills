@@ -34,3 +34,13 @@ jobs:
 
       - name: Smoke-test help output
         run: python scripts/nike.py --help
+
+  identifier-guard:
+    name: Internal identifier guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Scan tracked files for internal identifiers
+        run: |
+          ! git grep -InE 'lycorp|yahoo\.co\.jp|partner\.git\.corp|社内' \
+            -- ':(exclude).githooks/' ':(exclude).github/workflows/'

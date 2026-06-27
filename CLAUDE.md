@@ -72,7 +72,17 @@ python3 /path/to/scripts/nike.py status
 
 ### CI
 
-`.github/workflows/test.yml` が push / PR で発火し、Python 3.9〜3.12 マトリックスで unittest + JSON manifest 検証 + `--help` スモークテストを実行する。
+`.github/workflows/test.yml` が push / PR で発火し、Python 3.9〜3.12 マトリックスで unittest + JSON manifest 検証 + `--help` スモークテストを実行する。あわせて `identifier-guard` ジョブが tracked ファイルに内部識別子（組織固有のホスト名・ドメインなど）が含まれていないかを `git grep` で検査する。
+
+### 内部識別子ガード (ローカル opt-in)
+
+clone 後に 1 回だけ:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+これで `.githooks/pre-commit` が有効化され、内部識別子を含む追加行が staged にあると commit がブロックされる。検出パターンの実体は `.githooks/pre-commit` を参照。CI 側でも同じ検査が走るため push 後の最終防衛線にもなる。パターンを追加する場合は `.githooks/pre-commit` と `.github/workflows/test.yml` の両方を更新する。
 
 ## ワークフロー
 
