@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Block staged additions that contain internal identifiers.
+# See CLAUDE.md for setup (git config core.hooksPath .githooks).
+set -euo pipefail
+
+PATTERN='lycorp|yahoo\.co\.jp|partner\.git\.corp|社内'
+
+added_lines=$(
+  git diff --cached -U0 --no-color \
+    -- ':(exclude).githooks/' ':(exclude).github/workflows/' \
+    | grep -E '^\+[^+]' || true
+)
+
+if [[ -z "$added_lines" ]]; then
+  exit 0
+fi
+
+hits=$(printf '%s\n' "$added_lines" | grep -InE "$PATTERN" || true)
+
+if [[ -n "$hits" ]]; then
+  echo "❌ 内部識別子の追加行が検出されました:"
+  echo "$hits"
+  echo
+  echo "コミットを中止しました。該当行を修正してから再度 commit してください。"
+  echo "(緊急時のみ --no-verify で回避可能ですが非推奨)"
+  exit 1
+fi
